@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Partially broken sitemap index: the document is truncated inside the last
+  <sitemap> element. With partial parsing enabled the two well-formed
+  sub-sitemaps before the truncation point must still be parsed and emitted;
+  the broken trailing entry must not kill the whole batch.
+-->
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/good-1.xml</loc>
+    <lastmod>@YESTERDAY@T00:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/good-2.xml</loc>
+    <lastmod>@YESTERDAY@T03:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/bro

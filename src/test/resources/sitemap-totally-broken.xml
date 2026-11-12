@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entirely unparseable content: not XML at all. Parsing must throw an
+  UnknownFormatException so the bolt can route the tuple to the status
+  stream as Status.ERROR instead of silently treating it as an empty
+  sitemap.
+-->
+this is not a sitemap, just plain text <<<>>>

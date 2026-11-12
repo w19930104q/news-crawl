@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  News urlset containing an entry with a malformed <loc>. crawler-commons
+  cannot build a URL for the broken entry and drops it while parsing; the
+  remaining valid articles must still be emitted. This also covers the
+  "one bad child must not lose the batch" requirement at urlset level.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>http://www.example.com/news/good-before-bad.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T09:00:00Z</news:publication_date>
+      <news:title>Good story before the bad entry</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/good-after-bad.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T10:00:00Z</news:publication_date>
+      <news:title>Good story after the bad entry</news:title>
+    </news:news>
+    <!-- malformed alternate href: must be ignored without killing the entry -->
+    <xhtml:link rel="alternate" hreflang="de" href="ht!tp://broken host/de.html" />
+    <xhtml:link rel="alternate" hreflang="fr"
+      href="http://www.example.com/fr/news/good-after-bad.html" />
+  </url>
+</urlset>

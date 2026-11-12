@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Partially broken news urlset: the document is truncated inside the last
+  <url> element. With partial parsing enabled the two well-formed articles
+  before the truncation point must still be parsed and emitted, and both
+  must count as canonical articles; the broken trailing entry must not kill
+  the whole batch.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+  <url>
+    <loc>http://www.example.com/news/good-1.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T09:00:00Z</news:publication_date>
+      <news:title>Good story one</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/good-2.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T10:00:00Z</news:publication_date>
+      <news:title>Good story two</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/bro

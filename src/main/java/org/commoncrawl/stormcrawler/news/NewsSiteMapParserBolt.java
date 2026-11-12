@@ -21,7 +21,6 @@ import crawlercommons.sitemaps.SiteMap;
 import crawlercommons.sitemaps.SiteMapIndex;
 import crawlercommons.sitemaps.SiteMapParser;
 import crawlercommons.sitemaps.SiteMapURL;
-import crawlercommons.sitemaps.SiteMapURL.ChangeFrequency;
 import crawlercommons.sitemaps.UnknownFormatException;
 import crawlercommons.sitemaps.extension.Extension;
 import crawlercommons.sitemaps.extension.ExtensionMetadata;
@@ -33,9 +32,13 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.http.HttpHeaders;
 import org.apache.storm.metric.api.MeanReducer;
@@ -71,6 +74,9 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
     // - or a sitemapindex because some subsitemaps may
     // be news sitemaps
     // - pass "isSitemapNews" to status metadata
+    // - merge language-alternate pages (xhtml:link) and duplicate <loc>
+    // entries into a single canonical article so that numLinks only counts
+    // distinct new articles
 
     public static enum SitemapType {
         NEWS,
@@ -135,6 +141,41 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
     /** Delay in minutes used for scheduling sub-sitemaps * */
     private int scheduleSitemapsWithDelay = -1;
 
+    /**
+     * Outcome of parsing a sitemap document: the parsed document plus the number of canonical
+     * articles (or sub-sitemaps) which survived de-duplication and the recency filter. The count is
+     * the single source of truth used both for the {@link #numLinksKey} metadata (which drives the
+     * stale-sitemap decision in the scheduler) and for the parse-log counters.
+     */
+    public static class SiteMapParseResult {
+        public final AbstractSiteMap siteMap;
+
+        /** Distinct recent articles (urlset) or sub-sitemaps (index) emitted. */
+        public final int numCanonicalLinks;
+
+        /** Raw entries seen in the document before merging/filtering. */
+        public final int numEntriesFound;
+
+        /** Entries merged away as duplicate loc or language-alternate pages. */
+        public final int numDuplicates;
+
+        /** Entries skipped because their effective date is too old. */
+        public final int numSkippedNotRecent;
+
+        SiteMapParseResult(
+                AbstractSiteMap siteMap,
+                int numCanonicalLinks,
+                int numEntriesFound,
+                int numDuplicates,
+                int numSkippedNotRecent) {
+            this.siteMap = siteMap;
+            this.numCanonicalLinks = numCanonicalLinks;
+            this.numEntriesFound = numEntriesFound;
+            this.numDuplicates = numDuplicates;
+            this.numSkippedNotRecent = numSkippedNotRecent;
+        }
+    }
+
     @Override
     public void execute(Tuple tuple) {
         Metadata metadata = (Metadata) tuple.getValueByField("metadata");
@@ -148,6 +189,10 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
         boolean isSitemapIndex = Boolean.valueOf(metadata.getFirstValue(isSitemapIndexKey));
         boolean isSitemapVerified = Boolean.valueOf(metadata.getFirstValue(isSitemapVerifiedKey));
 
+        // the news type must be inherited by sub-sitemaps even though sniffing
+        // an index resets the news flag on the index document itself
+        boolean inheritedNewsSitemap = isNewsSitemap;
+
         if (sniffContent) {
             SitemapType type = detectContent(url, content);
             if (type != null) {
@@ -155,6 +200,7 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
                 metadata.setValue(SiteMapParserBolt.isSitemapKey, "true");
                 if (type == SitemapType.NEWS) {
                     isNewsSitemap = true;
+                    inheritedNewsSitemap = true;
                     metadata.setValue(isSitemapNewsKey, "true");
                 } else if (type == SitemapType.INDEX) {
                     isSitemapIndex = true;
@@ -206,9 +252,13 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
 
         AbstractSiteMap sitemap;
         List<Outlink> outlinks = new ArrayList<>();
+        SiteMapParseResult parseResult;
 
         try {
-            sitemap = parseSiteMap(url, content, ct, metadata, outlinks);
+            parseResult =
+                    parseSiteMapWithResult(
+                            url, content, ct, metadata, inheritedNewsSitemap, outlinks);
+            sitemap = parseResult.siteMap;
         } catch (Exception e) {
             // exception while parsing the sitemap
             String errorMessage = "Exception while parsing " + url + ": " + e;
@@ -252,21 +302,18 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
             metadata.remove(isSitemapIndexKey);
         }
 
-        // send outlinks to status stream
+        // send outlinks to status stream. The sitemap/index metadata
+        // (isSitemap, inherited news type, verified flag, scheduling delay) is
+        // already attached by parseSiteMapIndex
         for (Outlink ol : outlinks) {
-            if (isSitemapIndex) {
-                ol.getMetadata().setValue(isSitemapKey, "true");
-                if (isSitemapVerified) {
-                    // mark sitemaps from verified sitemap index also as "verified"
-                    ol.getMetadata().setValue(isSitemapVerifiedKey, "true");
-                }
-            }
             Values v = new Values(ol.getTargetURL(), ol.getMetadata(), Status.DISCOVERED);
             collector.emit(Constants.StatusStreamName, tuple, v);
         }
 
-        // track the number of links found in the sitemap
-        metadata.setValue(numLinksKey, String.valueOf(outlinks.size()));
+        // track the number of distinct recent articles/sub-sitemaps found:
+        // language alternates and duplicate locs are merged into one canonical
+        // article, so an unchanged sitemap without new articles reports 0
+        metadata.setValue(numLinksKey, String.valueOf(parseResult.numCanonicalLinks));
 
         // marking the main URL as successfully fetched
         collector.emit(
@@ -312,11 +359,50 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
         return true;
     }
 
+    /**
+     * Backward-compatible parse entry: parses the sitemap and appends outlinks to {@code links}.
+     * Prefer {@link #parseSiteMapWithResult} to also get the canonical-link counts.
+     */
     protected AbstractSiteMap parseSiteMap(
             String url,
             byte[] content,
             String contentType,
             Metadata parentMetadata,
+            List<Outlink> links)
+            throws UnknownFormatException, IOException {
+        boolean inheritedNews =
+                Boolean.parseBoolean(parentMetadata.getFirstValue(isSitemapNewsKey));
+        return parseSiteMapWithResult(
+                        url, content, contentType, parentMetadata, inheritedNews, links)
+                .siteMap;
+    }
+
+    protected SiteMapParseResult parseSiteMapWithResult(
+            String url,
+            byte[] content,
+            String contentType,
+            Metadata parentMetadata,
+            List<Outlink> links)
+            throws UnknownFormatException, IOException {
+        boolean inheritedNews =
+                Boolean.parseBoolean(parentMetadata.getFirstValue(isSitemapNewsKey));
+        return parseSiteMapWithResult(
+                url, content, contentType, parentMetadata, inheritedNews, links);
+    }
+
+    /**
+     * Parses a sitemap document.
+     *
+     * @param inheritedNewsSitemap whether the document was marked (or sniffed) as a news sitemap on
+     *     the way in; the flag is inherited by sub-sitemaps of an index even when the index
+     *     document itself is not a news urlset
+     */
+    protected SiteMapParseResult parseSiteMapWithResult(
+            String url,
+            byte[] content,
+            String contentType,
+            Metadata parentMetadata,
+            boolean inheritedNewsSitemap,
             List<Outlink> links)
             throws UnknownFormatException, IOException {
 
@@ -340,146 +426,242 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
         long end = System.currentTimeMillis();
         averagedMetrics.update(end - start);
 
+        final SiteMapParseResult result;
+        if (siteMap.isIndex()) {
+            result =
+                    parseSitemapIndex(
+                            sURL,
+                            (SiteMapIndex) siteMap,
+                            parentMetadata,
+                            inheritedNewsSitemap,
+                            links);
+        } else {
+            result = parseSitemapUrls(sURL, (SiteMap) siteMap, parentMetadata, links);
+        }
+        return result;
+    }
+
+    /**
+     * Parses a sitemap index. Sub-sitemaps inherit the news-sitemap type and verified state of the
+     * parent document and keep the staggered scheduling delay. A single malformed sub-sitemap entry
+     * is skipped without losing the remaining batch; duplicate sub-sitemap URLs are emitted only
+     * once.
+     */
+    private SiteMapParseResult parseSitemapIndex(
+            URL sURL,
+            SiteMapIndex smi,
+            Metadata parentMetadata,
+            boolean inheritedNewsSitemap,
+            List<Outlink> links) {
+        Collection<AbstractSiteMap> subsitemaps = smi.getSitemaps();
         int linksFound = 0;
         int linksSkippedNotRecentlyModified = 0;
+        int duplicates = 0;
+        int canonical = 0;
+        int delay = 0;
 
-        if (siteMap.isIndex()) {
-            SiteMapIndex smi = (SiteMapIndex) siteMap;
-            Collection<AbstractSiteMap> subsitemaps = smi.getSitemaps();
-            int delay = 0;
-            /*
-             * keep the subsitemaps as outlinks they will be fetched and parsed in the
-             * following steps
-             */
-            Iterator<AbstractSiteMap> iter = subsitemaps.iterator();
-            while (iter.hasNext()) {
-                linksFound++;
-                AbstractSiteMap asm = iter.next();
-                String target = asm.getUrl().toExternalForm();
+        boolean parentVerified =
+                Boolean.parseBoolean(parentMetadata.getFirstValue(isSitemapVerifiedKey));
 
-                Date lastModified = asm.getLastModified();
-                if (!recentlyModified(lastModified)) {
-                    linksSkippedNotRecentlyModified++;
-                    LOG.debug(
-                            "{} has a modified date {} which is more than {} hours old",
-                            target,
-                            lastModified.toString(),
-                            filterHoursSinceModified);
-                    continue;
-                }
-
-                Outlink ol =
-                        filterOutlink(
-                                sURL,
-                                target,
-                                parentMetadata,
-                                isSitemapKey,
-                                "true",
-                                isSitemapNewsKey,
-                                "false");
-                if (ol == null) {
-                    continue;
-                }
-
-                // add a delay
-                if (this.scheduleSitemapsWithDelay > 0) {
-                    if (delay > 0) {
-                        ol.getMetadata()
-                                .setValue(DefaultScheduler.DELAY_METADATA, Integer.toString(delay));
-                    }
-                    delay += this.scheduleSitemapsWithDelay;
-                }
-
-                links.add(ol);
-                LOG.debug("{} : [sitemap] {}", url, target);
+        Set<String> emitted = new HashSet<>();
+        Iterator<AbstractSiteMap> iter = subsitemaps.iterator();
+        while (iter.hasNext()) {
+            linksFound++;
+            AbstractSiteMap asm = iter.next();
+            String target;
+            Date lastModified;
+            try {
+                target = asm.getUrl().toExternalForm();
+                lastModified = asm.getLastModified();
+            } catch (RuntimeException e) {
+                // a single broken sub-sitemap entry must not drop the whole
+                // index batch
+                LOG.warn("Skipping malformed sub-sitemap entry in {}: {}", sURL, e.toString());
+                continue;
             }
-            LOG.info(
-                    "Sitemap index (found {} sitemaps, {} skipped): {}",
-                    linksFound,
-                    linksSkippedNotRecentlyModified,
-                    url);
-        }
-        // sitemap files
-        else {
-            SiteMap sm = (SiteMap) siteMap;
-            Collection<SiteMapURL> sitemapURLs = sm.getSiteMapUrls();
-            Iterator<SiteMapURL> iter = sitemapURLs.iterator();
-            sitemap_urls:
-            while (iter.hasNext()) {
-                linksFound++;
-                SiteMapURL smurl = iter.next();
-                // TODO handle priority in metadata
-                double priority = smurl.getPriority();
-                // TODO convert the frequency into a numerical value and handle
-                // it in metadata
-                ChangeFrequency freq = smurl.getChangeFrequency();
 
-                String target = smurl.getUrl().toExternalForm();
+            if (!recentlyModified(lastModified)) {
+                linksSkippedNotRecentlyModified++;
+                LOG.debug(
+                        "{} has a modified date {} which is more than {} hours old",
+                        target,
+                        lastModified,
+                        filterHoursSinceModified);
+                continue;
+            }
 
-                Date lastModified = smurl.getLastModified();
-                if (!recentlyModified(lastModified)) {
-                    // filter based on the published date
-                    linksSkippedNotRecentlyModified++;
-                    LOG.debug(
-                            "{} has a modified date {} which is more than {} hours old",
+            Outlink ol =
+                    filterOutlink(
+                            sURL,
                             target,
-                            lastModified,
-                            filterHoursSinceModified);
+                            parentMetadata,
+                            isSitemapKey,
+                            "true",
+                            isSitemapNewsKey,
+                            Boolean.toString(inheritedNewsSitemap));
+            if (ol == null) {
+                // filtered by URL filters (e.g. malformed URL)
+                continue;
+            }
+            if (!emitted.add(ol.getTargetURL())) {
+                duplicates++;
+                LOG.debug("Duplicate sub-sitemap skipped in {}: {}", sURL, target);
+                continue;
+            }
+
+            if (inheritedNewsSitemap) {
+                // inherit the news-sitemap type: a sub-sitemap of a news
+                // sitemap index is expected to hold news articles
+                ol.getMetadata().setValue(isSitemapNewsKey, "true");
+            }
+            if (parentVerified) {
+                // mark sitemaps from a verified sitemap index also as "verified"
+                ol.getMetadata().setValue(isSitemapVerifiedKey, "true");
+            }
+
+            // add a delay
+            if (this.scheduleSitemapsWithDelay > 0) {
+                if (delay > 0) {
+                    ol.getMetadata()
+                            .setValue(DefaultScheduler.DELAY_METADATA, Integer.toString(delay));
+                }
+                delay += this.scheduleSitemapsWithDelay;
+            }
+
+            links.add(ol);
+            canonical++;
+            LOG.debug("{} : [sitemap] {}", sURL, target);
+        }
+        LOG.info(
+                "Sitemap index (found {} sitemaps, {} duplicates, {} skipped): {}",
+                linksFound,
+                duplicates,
+                linksSkippedNotRecentlyModified,
+                sURL);
+        return new SiteMapParseResult(
+                smi, canonical, linksFound, duplicates, linksSkippedNotRecentlyModified);
+    }
+
+    /**
+     * Parses a urlset. All {@code <loc>} entries and their {@code xhtml:link} language-alternate
+     * pages are first merged into canonical articles (connected components; duplicate locs collapse
+     * into one). For every canonical article the effective publication date is the newest valid
+     * {@code news:publication_date} in the group, falling back to the newest valid {@code lastmod}
+     * when no valid publication date exists. Only articles passing the recency filter are emitted,
+     * and only those count towards {@code numLinks}.
+     */
+    private SiteMapParseResult parseSitemapUrls(
+            URL sURL, SiteMap sm, Metadata parentMetadata, List<Outlink> links) {
+        Collection<SiteMapURL> sitemapURLs = sm.getSiteMapUrls();
+
+        // first pass: build the canonical groups (loc + xhtml alternates as
+        // connected components) and merge the dates carried by each entry
+        DisjointSet<String> components = new DisjointSet<>();
+        Map<String, ArticleGroup> groups = new LinkedHashMap<>();
+        Set<String> seenTargets = new HashSet<>();
+        int duplicateLocEntries = 0;
+        int linksFound = 0;
+
+        for (SiteMapURL smurl : sitemapURLs) {
+            linksFound++;
+            String target;
+            try {
+                target = smurl.getUrl().toExternalForm();
+            } catch (RuntimeException e) {
+                LOG.warn("Skipping malformed sitemap URL entry in {}: {}", sURL, e.toString());
+                continue;
+            }
+            components.add(target);
+            if (!seenTargets.add(target)) {
+                // another <url> entry with the same loc: same logical article
+                duplicateLocEntries++;
+            }
+            ArticleGroup group = groups.computeIfAbsent(target, ArticleGroup::new);
+            group.merge(smurl);
+
+            ExtensionMetadata[] linkAttrs = smurl.getAttributesForExtension(Extension.LINKS);
+            if (linkAttrs != null) {
+                for (ExtensionMetadata attr : linkAttrs) {
+                    LinkAttributes linkAttr = (LinkAttributes) attr;
+                    URL href = linkAttr.getHref();
+                    if (href == null) {
+                        continue;
+                    }
+                    String hrefStr = href.toString();
+                    components.add(hrefStr);
+                    components.union(target, hrefStr);
+                    // an alternate page may only appear as xhtml:link and not
+                    // as its own <loc>: make sure it gets a group as well
+                    groups.computeIfAbsent(hrefStr, ArticleGroup::new);
+                }
+            }
+        }
+
+        // collapse the per-loc groups by their connected component
+        Map<String, ArticleGroup> canonical = new LinkedHashMap<>();
+        int mergedGroups = 0;
+        for (ArticleGroup group : groups.values()) {
+            String root = components.find(group.canonicalUrl);
+            ArticleGroup merged = canonical.get(root);
+            if (merged == null) {
+                canonical.put(root, group);
+            } else {
+                // duplicate loc or an xhtml:link-connected entry of the same
+                // logical article: merge, do not count as another article
+                merged.absorb(group);
+                mergedGroups++;
+            }
+        }
+
+        // second pass: one recency decision per canonical article, then emit
+        // the canonical loc and its language alternates once each
+        int linksSkippedNotRecentlyModified = 0;
+        int duplicates = mergedGroups + duplicateLocEntries;
+        int numCanonical = 0;
+        Set<String> emitted = new HashSet<>();
+
+        for (ArticleGroup group : canonical.values()) {
+            Date effectiveDate = group.effectiveDate();
+            if (!recentlyModified(effectiveDate)) {
+                linksSkippedNotRecentlyModified++;
+                LOG.debug(
+                        "{} canonical article {} dated {} is more than {} hours old",
+                        sURL,
+                        group.canonicalUrl,
+                        effectiveDate,
+                        filterHoursSinceModified);
+                continue;
+            }
+
+            Outlink canonicalOutlink =
+                    filterOutlink(
+                            sURL,
+                            group.canonicalUrl,
+                            parentMetadata,
+                            isSitemapKey,
+                            "false",
+                            isSitemapNewsKey,
+                            "false");
+            if (canonicalOutlink == null) {
+                continue;
+            }
+            if (emitted.add(canonicalOutlink.getTargetURL())) {
+                links.add(canonicalOutlink);
+                numCanonical++;
+            } else {
+                duplicates++;
+            }
+
+            // emit the language-alternate pages of this article, each once
+            for (String alternate : group.alternates) {
+                if (alternate.equals(group.canonicalUrl)) {
+                    // skip href links duplicating the sitemap URL
                     continue;
                 }
-                ExtensionMetadata[] newsAttrs = smurl.getAttributesForExtension(Extension.NEWS);
-                if (newsAttrs != null) {
-                    // filter based on news publication date
-                    // <news:publication_date>2008-12-23</news:publication_date>
-                    for (ExtensionMetadata attr : newsAttrs) {
-                        NewsAttributes newsAttr = (NewsAttributes) attr;
-                        Date pubDate = newsAttr.getPublicationDate();
-                        if (pubDate != null && !recentlyModified(pubDate)) {
-                            linksSkippedNotRecentlyModified++;
-                            LOG.debug(
-                                    "{} has a news publication date {} which is more than {} hours old",
-                                    target,
-                                    pubDate,
-                                    filterHoursSinceModified);
-                            continue sitemap_urls;
-                        }
-                    }
-                    // TODO: add news attributes to metadata
-                }
-
-                // add alternative language links
-                ExtensionMetadata[] linkAttrs = smurl.getAttributesForExtension(Extension.LINKS);
-                if (linkAttrs != null) {
-                    for (ExtensionMetadata attr : linkAttrs) {
-                        LinkAttributes linkAttr = (LinkAttributes) attr;
-                        URL href = linkAttr.getHref();
-                        if (href == null) {
-                            continue;
-                        }
-                        String hrefStr = href.toString();
-                        if (hrefStr.equals(target)) {
-                            // skip href links duplicating sitemap URL
-                            continue;
-                        }
-                        Outlink ol =
-                                filterOutlink(
-                                        sURL,
-                                        hrefStr,
-                                        parentMetadata,
-                                        isSitemapKey,
-                                        "false",
-                                        isSitemapNewsKey,
-                                        "false");
-                        if (ol != null) {
-                            links.add(ol);
-                        }
-                    }
-                }
-
                 Outlink ol =
                         filterOutlink(
                                 sURL,
-                                target,
+                                alternate,
                                 parentMetadata,
                                 isSitemapKey,
                                 "false",
@@ -488,18 +670,125 @@ public class NewsSiteMapParserBolt extends SiteMapParserBolt {
                 if (ol == null) {
                     continue;
                 }
-
-                links.add(ol);
-                LOG.debug("{} : [sitemap] {}", url, target);
+                if (emitted.add(ol.getTargetURL())) {
+                    links.add(ol);
+                } else {
+                    duplicates++;
+                }
             }
-            LOG.info(
-                    "Sitemap (found {} links, {} skipped): {}",
-                    linksFound,
-                    linksSkippedNotRecentlyModified,
-                    url);
+        }
+        LOG.info(
+                "Sitemap (found {} article entries, {} canonical recent articles, {} URLs merged as"
+                        + " duplicates/alternates, {} entries skipped as not recent): {}",
+                linksFound,
+                numCanonical,
+                duplicates,
+                linksSkippedNotRecentlyModified,
+                sURL);
+        return new SiteMapParseResult(
+                sm, numCanonical, linksFound, duplicates, linksSkippedNotRecentlyModified);
+    }
+
+    /**
+     * A canonical news article: the loc of its first {@code <url>} entry, the language-alternate
+     * URLs pointing at the same article and the newest valid dates seen across all its entries.
+     */
+    private static final class ArticleGroup {
+        private final String canonicalUrl;
+        private final Set<String> alternates = new HashSet<>();
+        private Date latestPublicationDate;
+        private Date latestLastModified;
+
+        ArticleGroup(String canonicalUrl) {
+            this.canonicalUrl = canonicalUrl;
         }
 
-        return siteMap;
+        /** Merges the dates and alternate links carried by one {@code <url>} entry. */
+        void merge(SiteMapURL smurl) {
+            latestLastModified = maxDate(latestLastModified, smurl.getLastModified());
+            ExtensionMetadata[] newsAttrs = smurl.getAttributesForExtension(Extension.NEWS);
+            if (newsAttrs != null) {
+                for (ExtensionMetadata attr : newsAttrs) {
+                    NewsAttributes newsAttr = (NewsAttributes) attr;
+                    // invalid publication dates parse to null and are ignored
+                    latestPublicationDate =
+                            maxDate(latestPublicationDate, newsAttr.getPublicationDate());
+                }
+            }
+            ExtensionMetadata[] linkAttrs = smurl.getAttributesForExtension(Extension.LINKS);
+            if (linkAttrs != null) {
+                for (ExtensionMetadata attr : linkAttrs) {
+                    LinkAttributes linkAttr = (LinkAttributes) attr;
+                    URL href = linkAttr.getHref();
+                    if (href != null) {
+                        alternates.add(href.toString());
+                    }
+                }
+            }
+        }
+
+        /** Merges another group representing the same canonical article. */
+        void absorb(ArticleGroup other) {
+            this.latestPublicationDate =
+                    maxDate(this.latestPublicationDate, other.latestPublicationDate);
+            this.latestLastModified = maxDate(this.latestLastModified, other.latestLastModified);
+            this.alternates.addAll(other.alternates);
+        }
+
+        /**
+         * Effective article date: the newest valid news publication date, or the newest valid
+         * lastmod when no valid publication date is available.
+         */
+        Date effectiveDate() {
+            if (latestPublicationDate != null) {
+                return latestPublicationDate;
+            }
+            return latestLastModified;
+        }
+
+        private static Date maxDate(Date a, Date b) {
+            if (a == null) {
+                return b;
+            }
+            if (b == null) {
+                return a;
+            }
+            return a.after(b) ? a : b;
+        }
+    }
+
+    /** Minimal union-find over strings to connect locs with their alternate pages. */
+    private static final class DisjointSet<T> {
+        private final Map<T, T> parent = new HashMap<>();
+
+        void add(T item) {
+            parent.putIfAbsent(item, item);
+        }
+
+        T find(T item) {
+            T root = item;
+            while (!root.equals(parent.get(root))) {
+                root = parent.get(root);
+            }
+            // path compression
+            T current = item;
+            while (!current.equals(root)) {
+                T next = parent.get(current);
+                parent.put(current, root);
+                current = next;
+            }
+            return root;
+        }
+
+        void union(T a, T b) {
+            add(a);
+            add(b);
+            T rootA = find(a);
+            T rootB = find(b);
+            if (!rootA.equals(rootB)) {
+                parent.put(rootB, rootA);
+            }
+        }
     }
 
     @Override

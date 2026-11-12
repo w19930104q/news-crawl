@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sitemap index mixing recently modified and stale sub-sitemaps.
+  Only the two recent sub-sitemaps must be emitted and counted;
+  the stale one is filtered by the hours-since-modified rule.
+-->
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-recent-1.xml</loc>
+    <lastmod>@YESTERDAY@T00:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-recent-2.xml</loc>
+    <lastmod>@TWODAYSAGO@T00:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-stale.xml</loc>
+    <lastmod>@THIRTYDAYSAGO@T00:00:00Z</lastmod>
+  </sitemap>
+</sitemapindex>

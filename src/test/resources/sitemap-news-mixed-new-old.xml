@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Mix of recent and stale articles in one sitemap, including a multilingual
+  group whose only recent member is the alternate page. Only recent canonical
+  articles must be emitted and counted in numLinks; stale entries must not
+  inflate the count, which otherwise keeps an unchanged old sitemap looking
+  active.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>http://www.example.com/news/fresh-one.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T09:00:00Z</news:publication_date>
+      <news:title>Fresh story one</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/fresh-two.html</loc>
+    <lastmod>@YESTERDAY@T20:00:00Z</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@TWODAYSAGO@T20:00:00Z</news:publication_date>
+      <news:title>Fresh story two</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/old-one.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@THIRTYDAYSAGO@T09:00:00Z</news:publication_date>
+      <news:title>Old story one</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/old-two.html</loc>
+    <lastmod>@THIRTYDAYSAGO@T08:00:00Z</lastmod>
+  </url>
+</urlset>

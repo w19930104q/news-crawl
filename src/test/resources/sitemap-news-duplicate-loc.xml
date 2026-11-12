@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Same <loc> listed twice with conflicting metadata.
+  - first entry: recent publication date, no lastmod
+  - second entry: older publication date but a recent lastmod
+  The duplicate must collapse into one canonical article whose effective
+  date is the newest valid news:publication_date (the recent one).
+  A second, distinct article is present to make ordering observable.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9">
+  <url>
+    <loc>http://www.example.com/news/duplicate.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T10:00:00Z</news:publication_date>
+      <news:title>Duplicate story (recent)</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/duplicate.html</loc>
+    <lastmod>@YESTERDAY@T15:00:00Z</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@THIRTYDAYSAGO@T10:00:00Z</news:publication_date>
+      <news:title>Duplicate story (stale republication)</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/unique.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T08:00:00Z</news:publication_date>
+      <news:title>Unique story</news:title>
+    </news:news>
+  </url>
+</urlset>

@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Conflicting / missing publication dates.
+  Article "invaliddates":
+   - EN entry has an unparseable news:publication_date and a recent lastmod
+   - DE alternate entry has a valid, recent publication date
+  The merged canonical article must take the newest *valid* publication
+  date; if none is valid it falls back to the newest valid lastmod.
+  Article "lastmodonly" has no news attributes at all: its lastmod decides.
+  Article "stale" carries only an ancient publication date and must be
+  filtered out even though its (also ancient) lastmod is present.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>http://www.example.com/news/invaliddates.html</loc>
+    <lastmod>@YESTERDAY@T11:00:00Z</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>not-a-valid-date</news:publication_date>
+      <news:title>Story with invalid publication date</news:title>
+    </news:news>
+    <xhtml:link rel="alternate" hreflang="de"
+      href="http://www.example.com/de/news/invaliddates.html" />
+  </url>
+  <url>
+    <loc>http://www.example.com/de/news/invaliddates.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>de</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T07:00:00Z</news:publication_date>
+      <news:title>Story mit ungueltigem Datum in der EN-Variante</news:title>
+    </news:news>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/lastmodonly.html</loc>
+    <lastmod>@YESTERDAY@T13:00:00Z</lastmod>
+  </url>
+  <url>
+    <loc>http://www.example.com/news/stale.html</loc>
+    <lastmod>@THIRTYDAYSAGO@T13:00:00Z</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@THIRTYDAYSAGO@T12:00:00Z</news:publication_date>
+      <news:title>Stale story</news:title>
+    </news:news>
+  </url>
+</urlset>

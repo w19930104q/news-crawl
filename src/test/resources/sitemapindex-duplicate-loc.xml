@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Sitemap index with a duplicated sub-sitemap entry.
+  The duplicate loc must be emitted once and counted once.
+-->
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-a.xml</loc>
+    <lastmod>@YESTERDAY@T00:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-a.xml</loc>
+    <lastmod>@YESTERDAY@T01:00:00Z</lastmod>
+  </sitemap>
+  <sitemap>
+    <loc>http://www.example.com/sitemaps/news-b.xml</loc>
+    <lastmod>@YESTERDAY@T02:00:00Z</lastmod>
+  </sitemap>
+</sitemapindex>

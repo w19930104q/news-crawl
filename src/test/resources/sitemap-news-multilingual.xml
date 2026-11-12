@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  News sitemap with language-alternate pages.
+  One logical article ("merger") is represented by:
+   - an English <loc> with self/DE/FR xhtml:link alternates
+   - a German <loc> entry (duplicate logical article) pointing back to EN
+  Plus a second, standalone French article.
+  Dates use placeholders replaced at test time so fixtures stay current.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+  xmlns:news="http://www.google.com/schemas/sitemap-news/0.9"
+  xmlns:xhtml="http://www.w3.org/1999/xhtml">
+  <url>
+    <loc>http://www.example.com/business/merger.html</loc>
+    <lastmod>@YESTERDAY@T12:00:00Z</lastmod>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>en</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T09:00:00Z</news:publication_date>
+      <news:title>Companies A, B in Merger Talks</news:title>
+    </news:news>
+    <!-- self alternate duplicates the loc: must not create another article -->
+    <xhtml:link rel="alternate" hreflang="en"
+      href="http://www.example.com/business/merger.html" />
+    <xhtml:link rel="alternate" hreflang="de"
+      href="http://www.example.com/de/business/merger.html" />
+    <xhtml:link rel="alternate" hreflang="fr"
+      href="http://www.example.com/fr/business/merger.html" />
+  </url>
+  <url>
+    <loc>http://www.example.com/de/business/merger.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>The Example Times</news:name>
+        <news:language>de</news:language>
+      </news:publication>
+      <!-- older publication date of the same logical article: must not win -->
+      <news:publication_date>@TWODAYSAGO@T09:00:00Z</news:publication_date>
+      <news:title>Firmen A und B sprechen ueber Fusion</news:title>
+    </news:news>
+    <xhtml:link rel="alternate" hreflang="en"
+      href="http://www.example.com/business/merger.html" />
+  </url>
+  <url>
+    <loc>http://www.example.com/fr/news/election.html</loc>
+    <news:news>
+      <news:publication>
+        <news:name>Le Exemple</news:name>
+        <news:language>fr</news:language>
+      </news:publication>
+      <news:publication_date>@YESTERDAY@T18:00:00Z</news:publication_date>
+      <news:title>Elections: results</news:title>
+    </news:news>
+  </url>
+</urlset>
